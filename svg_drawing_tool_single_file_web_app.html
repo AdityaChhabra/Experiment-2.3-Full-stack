@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SVG Drawing Tool</title>
+  <style>
+    :root {
+      --bg: #0f172a;       /* slate-900 */
+      --panel: #111827;    /* gray-900 */
+      --muted: #334155;    /* slate-600 */
+      --text: #e5e7eb;     /* gray-200 */
+      --accent: #22d3ee;   /* cyan-400 */
+      --border: #1f2937;   /* gray-800 */
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica Neue, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+      background: linear-gradient(180deg, #0b1220 0%, #0f172a 30%, #0f172a 100%);
+      color: var(--text);
+      height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      overflow: hidden;
+    }
+    .toolbar {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0));
+      backdrop-filter: saturate(120%) blur(6px);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    .group { display: flex; gap: 8px; align-items: center; padding-right: 8px; border-right: 1px solid var(--border); }
+    .group:last-child { border-right: none; }
+    label { font-size: 12px; color: #93c5fd; }
+    .btn {
+      appearance: none; border: 1px solid var(--border); background: #0b1220; color: var(--text);
+      padding: 8px 10px; border-radius: 12px; cursor: pointer; font-size: 14px;
+      transition: transform .05s ease, border-color .15s ease, background .15s ease, box-shadow .15s ease;
+      box-shadow: 0 0 0 0 rgba(34,211,238,0);
+    }
+    .btn:hover { border-color: #334155; }
+    .btn:active { transform: translateY(1px); }
+    .btn[data-active="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(34,211,238,.15) inset; }
+    .color { height: 32px; width: 40px; border-radius: 10px; border: 1px solid var(--border); background: #0b1220; }
+    .num { width: 70px; background:#0b1220; color: var(--text); border:1px solid var(--border); border-radius:10px; padding:8px; }
+    .canvas-wrap { position: relative; height: 100%; }
+    svg { width: 100%; height: 100%; display: block; background: repeating-conic-gradient(from 45deg, rgba(255,255,255,0.02) 0% 25%, transparent 0% 50%) 0 0/40px 40px, radial-gradient(1200px 600px at 20% -10%, rgba(34,211,238,.06), transparent 40%), radial-gradient(1200px 800px at 120% 10%, rgba(96,165,250,.06), transparent 40%); }
+    .cursor-crosshair { cursor: crosshair; }
+    .hint { position: absolute; right: 16px; bottom: 12px; color: #94a3b8; font-size: 12px; opacity: .9; background: rgba(2,6,23,.65); padding: 6px 10px; border:1px solid var(--border); border-radius: 10px; }
+  </style>
+</head>
+<body>
+  <div class="toolbar" role="toolbar" aria-label="Drawing toolbar">
+    <div class="group" aria-label="Tools">
+      <button class="btn" data-tool="pen" title="Freehand (P)">✏️ Pen</button>
+      <button class="btn" data-tool="line" title="Line (L)">／ Line</button>
+      <button class="btn" data-tool="rect" title="Rectangle (R)">▭ Rect</button>
+      <button class="btn" data-tool="ellipse" title="Ellipse (E)">◯ Ellipse</button>
+    </div>
+
+    <div class="group" aria-label="Stroke">
+      <label>Stroke</label>
+      <input class="color" id="strokeColor" type="color" value="#22d3ee" />
+      <input class="num" id="strokeWidth" type="number" min="1" max="40" value="3" />
+    </div>
+
+    <div class="group" aria-label="Fill">
+      <label>Fill</label>
+      <input class="color" id="fillColor" type="color" value="#00000000" />
+      <button class="btn" id="toggleFill" title="Toggle transparent fill">Toggle Fill</button>
+    </div>
+
+    <div class="group" aria-label="History & Export">
+      <button class="btn" id="undo" title="Undo (Ctrl+Z)">↶ Undo</button>
+      <button class="btn" id="redo" title="Redo (Ctrl+Shift+Z)">↷ Redo</button>
+      <button class="btn" id="clear">🧹 Clear</button>
+      <button class="btn" id="saveSVG">⬇️ SVG</button>
+      <button class="btn" id="savePNG">⬇️ PNG</button>
+    </div>
+  </div>
+
+  <div class="canvas-wrap">
+    <svg id="board" xmlns="http://www.w3.org/2000/svg" tabindex="0" aria-label="SVG drawing board"></svg>
+    <div class="hint">Tools: P/L/R/E · Hold <b>Shift</b> for straight lines & perfect circles</div>
+  </div>
+
+  <script>
+    const board = document.getElementById('board');
+    const toolButtons = Array.from(document.querySelectorAll('[data-tool]'));
+    const strokeColor = document.getElementById('strokeColor');
+    const strokeWidth = document.getElementById('strokeWidth');
+    const fillColor = document.getElementById('fillColor');
+    const toggleFillBtn = document.getElementById('toggleFill');
+    const undoBtn = document.getElementById('undo');
+    const redoBtn = document.getElementById('redo');
+    const clearBtn = document.getElementById('clear');
+    const saveSVGBtn = document.getElementById('saveSVG');
+    const savePNGBtn = document.getElementById('savePNG');
+
+    let state = {
+      tool: 'pen',
+      drawing: false,
+      start: null,
+      activeEl: null,
+      pathPoints: [],
+      fillEnabled: false,
+      undoStack: [],
+      redoStack: []
+    };
+
+    function setTool(t){
+      state.tool = t;
+      toolButtons.forEach(b => b.dataset.active = (b.dataset.tool === t));
+      board.classList.toggle('cursor-crosshair', true);
+      board.focus();
+    }
+    toolButtons.forEach(btn => btn.addEventListener('click', () => setTool(btn.dataset.tool)));
+    setTool('pen');
+
+    toggleFillBtn.addEventListener('click', () => {
+      state.fillEnabled = !state.fillEnabled;
+      toggleFillBtn.dataset.active = state.fillEnabled;
+      toggleFillBtn.textContent = state.fillEnabled ? 'Fill: On' : 'Toggle Fill';
+      if(!state.fillEnabled) fillColor.value = '#00000000';
+    });
+
+    function svgPoint(evt){
+      const rect = board.getBoundingClientRect();
+      const x = evt.clientX - rect.left;
+      const y = evt.clientY - rect.top;
+      return {x, y};
+    }
+
+    function pushHistory(el){
+      state.undoStack.push(el);
+      state.redoStack.length = 0;
+    }
+
+    function onPointerDown(e){
+      if(e.button !== 0) return;
+      board.setPointerCapture(e.pointerId);
+      state.drawing = true;
+      const {x, y} = svgPoint(e);
+      state.start = {x, y};
+
+      const common = {
+        stroke: strokeColor.value,
+        'stroke-width': parseFloat(strokeWidth.value) || 1,
+        fill: state.fillEnabled ? fillColor.value : 'none',
+        'stroke-linecap': 'round',
+        'stroke-linejoin': 'round'
+      };
+
+      if(state.tool === 'pen'){
+        state.pathPoints = [[x,y]];
+        const path = document.createElementNS('http://www.w3.org/2000/svg','path');
+        Object.entries(common).forEach(([k,v])=>path.setAttribute(k,v));
+        path.setAttribute('d', `M ${x} ${y}`);
+        path.classList.add('drawable');
+        board.appendChild(path);
+        state.activeEl = path;
+      } else if(state.tool === 'line'){
+        const line = document.createElementNS('http://www.w3.org/2000/svg','line');
+        Object.entries(common).forEach(([k,v])=>line.setAttribute(k,v));
+        line.setAttribute('x1', x); line.setAttribute('y1', y);
+        line.setAttribute('x2', x); line.setAttribute('y2', y);
+        line.classList.add('drawable');
+        board.appendChild(line);
+        state.activeEl = line;
+      } else if(state.tool === 'rect'){
+        const r = document.createElementNS('http://www.w3.org/2000/svg','rect');
+        Object.entries(common).forEach(([k,v])=>r.setAttribute(k,v));
+        r.setAttribute('x', x); r.setAttribute('y', y);
+        r.setAttribute('width', 0); r.setAttribute('height', 0);
+        r.classList.add('drawable');
+        board.appendChild(r);
+        state.activeEl = r;
+      } else if(state.tool === 'ellipse'){
+        const el = document.createElementNS('http://www.w3.org/2000/svg','ellipse');
+        Object.entries(common).forEach(([k,v])=>el.setAttribute(k,v));
+        el.setAttribute('cx', x); el.setAttribute('cy', y);
+        el.setAttribute('rx', 0); el.setAttribute('ry', 0);
+        el.classList.add('drawable');
+        board.appendChild(el);
+        state.activeEl = el;
+      }
+    }
+
+    function onPointerMove(e){
+      if(!state.drawing || !state.activeEl) return;
+      const {x, y} = svgPoint(e);
+      const start = state.start;
+      const shift = e.shiftKey;
+
+      if(state.tool === 'pen'){
+        const last = state.pathPoints[state.pathPoints.length-1];
+        if(!last || Math.hypot(x-last[0], y-last[1]) > 1.8){
+          state.pathPoints.push([x,y]);
+          const d = 'M ' + state.pathPoints[0][0] + ' ' + state.pathPoints[0][1] + ' ' + state.pathPoints.slice(1).map(p=>`L ${p[0]} ${p[1]}`).join(' ');
+          state.activeEl.setAttribute('d', d);
+        }
+      } else if(state.tool === 'line'){
+        let x2 = x, y2 = y;
+        if(shift){
+          const dx = x - start.x, dy = y - start.y;
+          if(Math.abs(dx) > Math.abs(dy)) { y2 = start.y; } else { x2 = start.x; }
+        }
+        state.activeEl.setAttribute('x2', x2);
+        state.activeEl.setAttribute('y2', y2);
+      } else if(state.tool === 'rect'){
+        const rx = x - start.x; const ry = y - start.y;
+        const w = Math.abs(rx); const h = Math.abs(ry);
+        const sx = rx < 0 ? x : start.x;
+        const sy = ry < 0 ? y : start.y;
+        const size = (e.shiftKey) ? Math.min(w,h) : null;
+        state.activeEl.setAttribute('x', sx);
+        state.activeEl.setAttribute('y', sy);
+        state.activeEl.setAttribute('width', size ?? w);
+        state.activeEl.setAttribute('height', size ?? h);
+      } else if(state.tool === 'ellipse'){
+        const rx = Math.abs(x - start.x);
+        const ry = Math.abs(y - start.y);
+        const r = shift ? Math.min(rx, ry) : null;
+        const cx = (x + start.x) / 2;
+        const cy = (y + start.y) / 2;
+        state.activeEl.setAttribute('cx', cx);
+        state.activeEl.setAttribute('cy', cy);
+        state.activeEl.setAttribute('rx', r ?? rx/1);
+        state.activeEl.setAttribute('ry', r ?? ry/1);
+      }
+    }
+
+    function onPointerUp(e){
+      if(!state.drawing) return;
+      state.drawing = false;
+      board.releasePointerCapture(e.pointerId);
+      if(state.activeEl){ pushHistory(state.activeEl); }
+      state.activeEl = null;
+      state.start = null;
+      state.pathPoints = [];
+    }
+
+    board.addEventListener('pointerdown', onPointerDown);
+    board.addEventListener('pointermove', onPointerMove);
+    board.addEventListener('pointerup', onPointerUp);
+
+    function undo(){
+      const el = state.undoStack.pop();
+      if(el){ state.redoStack.push(el); el.remove(); }
+    }
+    function redo(){
+      const el = state.redoStack.pop();
+      if(el){ board.appendChild(el); state.undoStack.push(el); }
+    }
+    undoBtn.addEventListener('click', undo);
+    redoBtn.addEventListener('click', redo);
+
+    clearBtn.addEventListener('click', () => {
+      Array.from(board.querySelectorAll('.drawable')).forEach(n=>n.remove());
+      state.undoStack.length = 0; state.redoStack.length = 0;
+    });
+
+    function download(filename, blob){
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+    }
+
+    function serializeSVG(){
+      const clone = board.cloneNode(true);
+      const vb = board.viewBox.baseVal;
+      if(!vb || (vb.width === 0 && vb.height === 0)){
+        clone.setAttribute('width', board.clientWidth);
+        clone.setAttribute('height', board.clientHeight);
+        clone.setAttribute('viewBox', `0 0 ${board.clientWidth} ${board.clientHeight}`);
+      }
+      const xml = new XMLSerializer().serializeToString(clone);
+      return '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n' + xml;
+    }
+
+    saveSVGBtn.addEventListener('click', () => {
+      const svgText = serializeSVG();
+      download('drawing.svg', new Blob([svgText], {type:'image/svg+xml'}));
+    });
+
+    savePNGBtn.addEventListener('click', async () => {
+      const svgText = serializeSVG();
+      const img = new Image();
+      const svgURL = URL.createObjectURL(new Blob([svgText], {type:'image/svg+xml'}));
+      const w = board.clientWidth, h = board.clientHeight;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#0f172a';
+        ctx.fillRect(0,0,w,h);
+        ctx.drawImage(img, 0, 0, w, h);
+        canvas.toBlob(b => {
+          if(b) download('drawing.png', b);
+          URL.revokeObjectURL(svgURL);
+        }, 'image/png');
+      };
+      img.src = svgURL;
+    });
+
+    document.addEventListener('keydown', (e) => {
+      const k = e.key.toLowerCase();
+      if((e.ctrlKey || e.metaKey) && k === 'z' && !e.shiftKey){ e.preventDefault(); undo(); }
+      else if((e.ctrlKey || e.metaKey) && k === 'z' && e.shiftKey){ e.preventDefault(); redo(); }
+      else if(k === 'p') setTool('pen');
+      else if(k === 'l') setTool('line');
+      else if(k === 'r') setTool('rect');
+      else if(k === 'e') setTool('ellipse');
+    });
+
+    const resizeObserver = new ResizeObserver(() => {
+      const w = board.clientWidth, h = board.clientHeight;
+      board.setAttribute('viewBox', `0 0 ${w} ${h}`);
+      board.setAttribute('width', w);
+      board.setAttribute('height', h);
+    });
+    resizeObserver.observe(document.body);
+  </script>
+</body>
+</html>
